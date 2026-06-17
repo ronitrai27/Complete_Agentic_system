@@ -23,6 +23,12 @@ if "entity_ruler" not in nlp.pipe_names:
         "Engineering", "Security", "Research", "Finance", "Human Resources",
         "Legal", "Product", "Customer Success", "Infrastructure", "Data Science",
     ]
+    _custom_features = [
+        "AI Assistant", "Authentication", "Analytics",
+        "Project Atlas", "Project Orion", "Project Nebula",
+        "Atlas", "Orion", "Nebula",
+    ]
+    
     dept_patterns = [
         {"label": "ORG", "pattern": [{"LOWER": name.lower()}, {"LOWER": "department"}]}
         for name in _dept_names
@@ -31,7 +37,13 @@ if "entity_ruler" not in nlp.pipe_names:
         {"label": "ORG", "pattern": [{"LOWER": name.lower()}]}
         for name in _dept_names
     ]
-    ruler.add_patterns(dept_patterns)
+    
+    feature_patterns = [
+        {"label": "PRODUCT", "pattern": [{"LOWER": word.lower()} for word in name.split()]}
+        for name in _custom_features
+    ]
+    
+    ruler.add_patterns(dept_patterns + feature_patterns)
 
 # Define target entity types we care about for knowledge graph construction
 TARGET_ENTITIES = {
@@ -90,8 +102,10 @@ def _clean_and_validate_node(name: str) -> str:
     Clean and validate entity or relation node names.
     - Strips leading/trailing '#' characters and whitespace/newlines.
     - Normalizes internal whitespaces/newlines.
+    - Strips leading "the " (case-insensitive).
     - Skips if the node starts with '#' or digits followed by whitespace (e.g. '# Rohan', '15\n\n Rohan').
     - Skips if the node is longer than 60 characters or empty/single-char.
+    - Skips if the node is a merged phrase or contains verbs/conjunctions that indicate it's a clause.
     """
     if not name:
         return ""
@@ -101,12 +115,35 @@ def _clean_and_validate_node(name: str) -> str:
     if re.match(r"^#\s", norm_temp) or re.match(r"^\d+\s", norm_temp):
         return ""
         
-    # Strip leading/trailing '#' and whitespace/newlines/punctuation
-    cleaned = name.strip("# \t\n\r,.-")
+    # Strip leading/trailing '#' and whitespace/newlines/punctuation/quotes
+    cleaned = name.strip("# \t\n\r,.-'\"")
     # Normalize internal whitespace
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     
+    # Strip leading "the " (case-insensitive)
+    if cleaned.lower().startswith("the "):
+        cleaned = cleaned[4:].strip()
+        
+    # Clean again after stripping "the"
+    cleaned = cleaned.strip("# \t\n\r,.-'\"")
+    
     if len(cleaned) > 60 or len(cleaned) <= 1:
+        return ""
+        
+    # Skip if contains verbs/conjunctions indicating it's a merged sentence chunk
+    # e.g., "Aarav Mehta Works", "Project Atlas with", "reports quarterly", etc.
+    lower_cleaned = cleaned.lower()
+    
+    # If it ends with or starts with a verb/conjunction/preposition
+    words = lower_cleaned.split()
+    if not words:
+        return ""
+    bad_words = {"with", "to", "from", "for", "and", "in", "on", "of", "about", "works", "contributes", "reports", "attends", "collaborates", "depends"}
+    if words[0] in bad_words or words[-1] in bad_words:
+        return ""
+        
+    # If the entity contains a verb like "works", "contributes", "collaborates", "reports" as a separate word, it's a merged sentence
+    if re.search(r"\b(works|contributes|collaborates|reports|attends|depends)\b", lower_cleaned):
         return ""
         
     return cleaned
@@ -122,56 +159,95 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
     - Longer-match deduplication: if a shorter entity name is a substring of a
       longer one already seen, prefer the longer one.
     - Whitespace/newline normalisation.
+    - Expands entities to full noun chunks if they represent proper names (e.g. "Aarav" -> "Aarav Mehta").
+    - Title-cases PERSON names that are not properly capitalized.
     """
     clean_text = re.sub(r"\s+", " ", text).strip()
-    doc = nlp(clean_text)
+
+    # If the input is all-lowercase (typical for user queries), also try
+    # a title-cased version so spaCy can recognise proper nouns.
+    texts_to_try = [clean_text]
+    if clean_text == clean_text.lower() and len(clean_text) < 500:
+        texts_to_try.append(clean_text.title())
 
     # Build a dict: normalised_name -> (original_name, label)
     # For deduplication we prefer the LONGER variant
     entities: Dict[str, tuple] = {}  # key=lower_name, val=(name, label)
 
-    for ent in doc.ents:
-        raw_name = ent.text.strip()
-        label = ent.label_
+    for current_text in texts_to_try:
+        doc = nlp(current_text)
 
-        if label not in TARGET_ENTITIES or len(raw_name) < 2:
-            continue
+        for ent in doc.ents:
+            raw_name = ent.text.strip()
+            label = ent.label_
 
-        # Clean and validate the extracted entity name
-        name = _clean_and_validate_node(raw_name)
-        if not name:
-            continue
-        lower = name.lower()
+            if label not in TARGET_ENTITIES or len(raw_name) < 2:
+                continue
 
-        # Skip tokens that are purely numeric or single characters
-        if re.fullmatch(r"[\d\W]+", name):
-            continue
+            # Expands entity to full proper noun chunk if applicable
+            token = ent.root
+            expanded_name = raw_name
+            if doc.noun_chunks:
+                for chunk in doc.noun_chunks:
+                    if token in chunk:
+                        # Skip leading determiners
+                        words = [t.text for t in chunk if t.pos_ != "DET"]
+                        chunk_text = " ".join(words).strip()
 
-        # Prefer longer names: if a shorter version is already stored, replace it.
-        # Also skip if this name is already a substring of a stored longer name.
-        dominated = False
-        to_delete = []
-        for stored_lower, (stored_name, stored_label) in entities.items():
-            if lower == stored_lower:
-                # Exact duplicate — keep whichever is longer
-                if len(name) > len(stored_name):
-                    to_delete.append(stored_lower)
-                else:
+                        # Title-case if it's a PERSON or consists of proper nouns
+                        is_proper_chunk = all(t.pos_ == "PROPN" for t in chunk if t.text.lower() not in ("the", "a", "an"))
+                        if label == "PERSON" or is_proper_chunk:
+                            chunk_text = chunk_text.title()
+
+                        # Check if all words in the proper noun chunk start with upper case
+                        chunk_words = chunk_text.split()
+                        if len(chunk_words) <= 4 and all(w[0].isupper() for w in chunk_words if w and w[0].isalpha()):
+                            expanded_name = chunk_text
+                        break
+
+            # Clean and validate the extracted entity name
+            name = _clean_and_validate_node(expanded_name)
+            if not name:
+                # Fall back to cleaning raw name if the expanded chunk was rejected
+                name = _clean_and_validate_node(raw_name)
+                if not name:
+                    continue
+
+            # Title case PERSON names
+            if label == "PERSON":
+                name = name.title()
+
+            lower = name.lower()
+
+            # Skip tokens that are purely numeric or single characters
+            if re.fullmatch(r"[\d\W]+", name):
+                continue
+
+            # Prefer longer names: if a shorter version is already stored, replace it.
+            # Also skip if this name is already a substring of a stored longer name.
+            dominated = False
+            to_delete = []
+            for stored_lower, (stored_name, stored_label) in entities.items():
+                if lower == stored_lower:
+                    # Exact duplicate — keep whichever is longer
+                    if len(name) > len(stored_name):
+                        to_delete.append(stored_lower)
+                    else:
+                        dominated = True
+                    break
+                if lower in stored_lower:
+                    # New name is substring of an existing longer name — skip it
                     dominated = True
-                break
-            if lower in stored_lower:
-                # New name is substring of an existing longer name — skip it
-                dominated = True
-                break
-            if stored_lower in lower:
-                # Existing entry is substring of new name — replace it
-                to_delete.append(stored_lower)
+                    break
+                if stored_lower in lower:
+                    # Existing entry is substring of new name — replace it
+                    to_delete.append(stored_lower)
 
-        for k in to_delete:
-            del entities[k]
+            for k in to_delete:
+                del entities[k]
 
-        if not dominated:
-            entities[lower] = (name, label)
+            if not dominated:
+                entities[lower] = (name, label)
 
     return [{"name": name, "label": label} for name, label in entities.values()]
 

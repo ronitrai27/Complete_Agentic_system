@@ -90,13 +90,17 @@ def get_neighbors(entity_name: str, limit: int = 15) -> List[Dict[str, Any]]:
     """
     Retrieves all direct neighbors of a specific entity using fuzzy matching.
     """
+    clean_name = entity_name.strip()
+    if clean_name.lower().startswith("the "):
+        clean_name = clean_name[4:].strip()
+        
     query = """
     MATCH (e:Entity) WHERE toLower(e.name) CONTAINS toLower($name)
     MATCH (e)-[r]-(n:Entity)
     RETURN type(r) AS rel_type, n.name AS neighbor_name, n.label AS neighbor_label
     LIMIT $limit
     """
-    records = run_read_query(query, {"name": entity_name, "limit": limit})
+    records = run_read_query(query, {"name": clean_name, "limit": limit})
     return records
 
 def get_two_hop_neighbors(entity_name: str, limit: int = 20) -> List[Dict[str, Any]]:
@@ -104,6 +108,10 @@ def get_two_hop_neighbors(entity_name: str, limit: int = 20) -> List[Dict[str, A
     Retrieves 2-hop neighbors of a specific entity using fuzzy matching, representing paths:
     (Entity) <-> (Neighbor) <-> (Neighbor's Neighbor)
     """
+    clean_name = entity_name.strip()
+    if clean_name.lower().startswith("the "):
+        clean_name = clean_name[4:].strip()
+        
     query = """
     MATCH (e:Entity) WHERE toLower(e.name) CONTAINS toLower($name)
     MATCH (e)-[r1]-(n1:Entity)
@@ -118,7 +126,7 @@ def get_two_hop_neighbors(entity_name: str, limit: int = 20) -> List[Dict[str, A
            n2.label AS n2_label
     LIMIT $limit
     """
-    records = run_read_query(query, {"name": entity_name, "limit": limit})
+    records = run_read_query(query, {"name": clean_name, "limit": limit})
     return records
 
 def find_shortest_path(start_entity: str, end_entity: str, max_depth: int = 5) -> Dict[str, Any]:
@@ -126,13 +134,22 @@ def find_shortest_path(start_entity: str, end_entity: str, max_depth: int = 5) -
     Finds the shortest path between start_entity and end_entity.
     Returns the path details (nodes and relations).
     """
+    clean_start = start_entity.strip()
+    if clean_start.lower().startswith("the "):
+        clean_start = clean_start[4:].strip()
+    clean_end = end_entity.strip()
+    if clean_end.lower().startswith("the "):
+        clean_end = clean_end[4:].strip()
+
     # Safe interpolation of max_depth
     depth_str = f"*..{int(max_depth)}"
     query = f"""
-    MATCH p = shortestPath((start:Entity {{name: $start_entity}})-[{depth_str}]-(end:Entity {{name: $end_entity}}))
+    MATCH (start:Entity) WHERE toLower(start.name) CONTAINS toLower($start_entity)
+    MATCH (end:Entity) WHERE toLower(end.name) CONTAINS toLower($end_entity)
+    MATCH p = shortestPath((start)-[{depth_str}]-(end))
     RETURN p
     """
-    records = run_read_query(query, {"start_entity": start_entity, "end_entity": end_entity})
+    records = run_read_query(query, {"start_entity": clean_start, "end_entity": clean_end})
     
     if not records or not records[0].get("p"):
         return {"found": False, "path": []}

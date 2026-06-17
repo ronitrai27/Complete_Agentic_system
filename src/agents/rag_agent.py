@@ -35,7 +35,8 @@ import asyncio
 import os
 from typing import Any, Dict, List, Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send, interrupt, Command
@@ -58,7 +59,7 @@ from src.utils.parser import parse_file
 def get_llm(temperature: float = 0.2) -> ChatOpenAI:
     api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
     return ChatOpenAI(
-        model="gpt-4.1-nano",  # Cheapest OpenAI model
+        model="gpt-4.1-mini",  # Upgraded OpenAI model
         temperature=temperature,
         api_key=api_key,
     )
@@ -74,6 +75,11 @@ SYSTEM_PROMPT = """You are a highly intelligent research assistant with access t
 Your job is to give precise, well-structured answers. When you have both web search
 and knowledge base context, synthesize them. Always cite your sources if you know them.
 If the user uploaded a file, use the file content to answer their question directly.
+
+CRITICAL INSTRUCTIONS:
+1. Do NOT hallucinate. Only state facts directly supported by the retrieved context.
+2. If the context does not contain enough information to answer the question, state clearly that you do not know the answer based on the provided documents. Do not make up answers.
+3. Be highly factual and objective.
 """
 
 
@@ -84,10 +90,14 @@ If the user uploaded a file, use the file content to answer their question direc
 
 ROUTER_PROMPT = """Given the user query below, decide which retrieval route to use.
 Reply with EXACTLY one of these words (no other text):
-  - search    → query needs live web info, news, current events, prices, facts
-  - rag       → query is about uploaded documents or stored knowledge base
-  - mcp       → query needs to read Gmail, Google Docs, Notion files
-  - direct    → general question that can be answered from knowledge alone (e.g. greetings, capabilities, general conversation)
+  - search    → query needs live/current/external web info, news, prices, weather, recent events, real-time facts not in the database.
+                Examples: "latest news about AI", "current Bitcoin price", "what happened yesterday"
+  - rag       → query asks about specific people, companies, departments, projects, skills, features, documents, tasks, stored/uploaded data — if the answer lives in a private database, knowledge base, or uploaded file, always pick rag.
+                Examples: "who is Sarah?", "what does Rohan work on?", "find AI assistant owner", "what does the uploaded doc say?"
+  - mcp       → query specifically needs to interact with or read Gmail, Google Docs, Notion, Outlook.
+                Examples: "read my email", "show my latest threads", "check my inbox"
+  - direct    → ONLY for simple greetings, small talk, or questions about the assistant's own capabilities. NOT for factual/entity queries.
+                Examples: "hello", "what can you do?", "thanks", "who are you"
 
 {document_context}
 User query: {query}
@@ -339,7 +349,7 @@ def rag_retrieve(state: AgentState) -> Dict:
 # Calls Arcade MCP tools (Gmail, Google Docs, Notion) using a ReAct loop.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def mcp_agent(state: AgentState) -> Dict:
+def mcp_agent(state: AgentState, config: RunnableConfig) -> Dict:
     """
     Invokes Arcade MCP tools asynchronously.
     Uses a simple tool-calling loop: LLM decides which tool to call,
@@ -349,7 +359,6 @@ def mcp_agent(state: AgentState) -> Dict:
     pause the graph and surface the auth URL to the UI.
     """
     user_query = state.get("user_query", "")
-    conversation_id = state.get("conversation_id")
     emit("🔌 MCP Agent: loading Arcade tools (Gmail, Google Docs, Notion)...", "step")
     logger.info(f"[MCP] Starting MCP agent for: '{user_query}'")
     mcp_results = []
@@ -372,8 +381,14 @@ def mcp_agent(state: AgentState) -> Dict:
         # Bind tools to LLM
         llm = get_llm().bind_tools(tools)
 
-        # Use conversation_id as user_id so each user has their own OAuth tokens
-        user_id = conversation_id or "default_user"
+        # Use a persistent user_id so we don't trigger OAuth for every new conversation
+        user_id = "raironit127@gmail.com"
+
+        # Merge graph config with user_id to preserve LangGraph context
+        merged_config = config.copy() if config else {}
+        if "configurable" not in merged_config:
+            merged_config["configurable"] = {}
+        merged_config["configurable"]["user_id"] = user_id
 
         messages = [
             SystemMessage(content=SYSTEM_PROMPT),
@@ -400,7 +415,7 @@ def mcp_agent(state: AgentState) -> Dict:
                     # NOTE: GraphInterrupt must propagate — do NOT catch it here
                     tool_output = await matched.ainvoke(
                         tool_args,
-                        config={"configurable": {"user_id": user_id}}
+                        config=merged_config
                     )
                     if isinstance(tool_output, dict) and "error" in tool_output:
                         emit(f"⚠️ MCP tool **{tool_name}** returned error: {tool_output['error']}", "warning")
@@ -411,6 +426,15 @@ def mcp_agent(state: AgentState) -> Dict:
                         "args": tool_args,
                         "output": str(tool_output)[:2000],
                     })
+                    # Add ToolMessage to the messages history so the ReAct loop is valid in LangChain
+                    import json
+                    messages.append(
+                        ToolMessage(
+                            content=json.dumps(tool_output) if not isinstance(tool_output, str) else tool_output,
+                            tool_call_id=tool_call["id"],
+                            name=tool_name,
+                        )
+                    )
 
         await arcade_client.close()
         return results
@@ -422,8 +446,10 @@ def mcp_agent(state: AgentState) -> Dict:
     except Exception as e:
         # Only catch genuine errors (network failures, API errors, etc.)
         # GraphInterrupt is a BaseException so it won't be caught here.
+        import traceback
+        traceback.print_exc()
         emit(f"⚠️ MCP Agent failed: {e}", "warning")
-        logger.error(f"[MCP] Agent failed: {e}")
+        logger.error("[MCP] Agent failed: {}", e, exc_info=True)
 
     emit(f"✅ MCP Agent: completed with {len(mcp_results)} tool result(s)", "success")
     logger.info(f"[MCP] Completed with {len(mcp_results)} tool result(s)")
@@ -457,15 +483,18 @@ def llm_answer(state: AgentState) -> Dict:
     # 2. RAG context
     if rag_context:
         if rag_context.text_chunks:
-            chunks_text = "\n---\n".join(
-                c.get("text", "") for c in rag_context.text_chunks[:4]
-            )
+            chunk_parts = []
+            for c in rag_context.text_chunks[:6]:  # Show up to 6 chunks for better coverage
+                doc_name = c.get("metadata", {}).get("filename") or c.get("metadata", {}).get("document_id", "Unknown Document")
+                chunk_text = c.get("text", "")
+                chunk_parts.append(f"[Source Document: {doc_name}]\n{chunk_text}")
+            chunks_text = "\n---\n".join(chunk_parts)
             context_parts.append(f"## Knowledge Base Excerpts\n{chunks_text}\n")
 
         if rag_context.graph_context:
             graph_lines = [
                 f"- {g['entity']} --[{g['relation']}]--> {g['neighbor']}"
-                for g in rag_context.graph_context[:10]
+                for g in rag_context.graph_context[:15]
             ]
             context_parts.append(f"## Knowledge Graph Context\n" + "\n".join(graph_lines) + "\n")
 

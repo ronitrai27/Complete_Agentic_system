@@ -173,33 +173,7 @@ with st.sidebar:
     )
     st.divider()
 
-    from src.pipelines.ingestion import INGESTION_PROGRESS
-    conv_id = st.session_state.conv_id
-
-    if conv_id in INGESTION_PROGRESS:
-        prog = INGESTION_PROGRESS[conv_id]
-        percent = prog["percent"]
-        status = prog["status"]
-        details = prog["details"]
-
-        if status == "completed":
-            st.success("🎉 Ingestion Complete!")
-            st.info(f"**Details:**\n{details}")
-        elif status == "failed":
-            st.error("❌ Ingestion Failed")
-            st.caption(f"Reason: {details}")
-        else:
-            # Running
-            st.warning("⚡ Ingestion in progress...")
-            st.progress(percent / 100.0, text=f"**{percent}% — {status}**")
-            if details:
-                st.caption(details)
-            
-            # Auto-refresh: rerun the app after a tiny delay
-            time.sleep(0.5)
-            st.rerun()
-    else:
-        st.info("No documents uploaded in this thread yet. Upload a file below to build memory!")
+    render_sidebar_progress(st.session_state.conv_id)
 
 st.title("⚡ AI Agent")
 st.caption(f"Loaded OpenAI Key: `{settings.openai_api_key[:24]}...{settings.openai_api_key[-24:]}`")
@@ -242,30 +216,35 @@ if st.session_state.auth_pending and st.session_state.auth_state:
     auth = st.session_state.auth_state
     tool_name = auth.get("tool_name", "an external tool")
     auth_url  = auth.get("auth_url", "")
-    st.warning(
-        f"🔐 **Authorization required for `{tool_name}`**\n\n"
-        f"Click the link below to grant access, then click **I've Authorized** to continue."
-    )
-    if auth_url:
-        st.markdown(f"👉 [**Open authorization link**]({auth_url})", unsafe_allow_html=False)
-    col_auth, col_deny, _ = st.columns([1.5, 1, 3.5])
-    with col_auth:
-        if st.button("✅ I've Authorized", type="primary", key="auth_accept"):
-            result = resume_agent_after_auth(st.session_state.conv_id, authorized=True)
-            answer = result.get("final_answer", "Authorization complete — please re-ask your question.")
-            st.session_state.messages.append({"role": "agent", "content": answer})
-            st.session_state.auth_pending = False
-            st.session_state.auth_state = None
-            st.rerun()
-    with col_deny:
-        if st.button("✗ Cancel", key="auth_deny"):
-            st.session_state.messages.append({
-                "role": "agent",
-                "content": f"❌ Authorization for `{tool_name}` was cancelled."
-            })
-            st.session_state.auth_pending = False
-            st.session_state.auth_state = None
-            st.rerun()
+    
+    with st.container(border=True):
+        st.markdown("### 🔐 Authorization Required")
+        st.write(f"The AI Agent needs permission to access external tool: **`{tool_name}`**")
+        
+        if auth_url:
+            st.link_button("🔑 Grant Access / Authorize", auth_url, use_container_width=True)
+            
+        st.caption("Please click the button above to authorize in the browser tab, then return here and click **I've Authorized**.")
+        st.divider()
+        
+        col_auth, col_deny = st.columns(2)
+        with col_auth:
+            if st.button("✅ I've Authorized", type="primary", key="auth_accept", use_container_width=True):
+                result = resume_agent_after_auth(st.session_state.conv_id, authorized=True)
+                answer = result.get("final_answer", "Authorization complete — please re-ask your question.")
+                st.session_state.messages.append({"role": "agent", "content": answer})
+                st.session_state.auth_pending = False
+                st.session_state.auth_state = None
+                st.rerun()
+        with col_deny:
+            if st.button("✗ Cancel", key="auth_deny", use_container_width=True):
+                st.session_state.messages.append({
+                    "role": "agent",
+                    "content": f"❌ Authorization for `{tool_name}` was cancelled."
+                })
+                st.session_state.auth_pending = False
+                st.session_state.auth_state = None
+                st.rerun()
 
 st.divider()
 
