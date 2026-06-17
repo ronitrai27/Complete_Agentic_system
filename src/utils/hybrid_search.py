@@ -60,10 +60,13 @@ def get_hybrid_context(query_text: str, top_k: int = 4) -> Dict[str, Any]:
             
     # 3. Entity Graph context lookup
     graph_context = []
+    extracted_entities = []
+    graph_error = None
     try:
         # Extract entities from query
         entities = extract_entities(query_text)
-        logger.info(f"Extracted entities from query: {[e['name'] for e in entities]}")
+        extracted_entities = [ent["name"] for ent in entities]
+        logger.info(f"Extracted entities from query: {extracted_entities}")
         
         for ent in entities:
             name = ent["name"]
@@ -114,8 +117,11 @@ def get_hybrid_context(query_text: str, top_k: int = 4) -> Dict[str, Any]:
                     })
     except Exception as e:
         logger.error(f"Graph context lookup failed: {e}")
+        graph_error = str(e)
         
     return {
         "text_chunks": combined_chunks,
-        "graph_context": graph_context
+        "graph_context": graph_context,
+        "extracted_entities": extracted_entities,
+        "graph_error": graph_error
     }

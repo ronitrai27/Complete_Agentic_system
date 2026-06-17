@@ -19,7 +19,19 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import importlib
-for mod in ["src.agents.state", "src.agents.rag_agent", "src.pipelines.ingestion"]:
+# Reload all modules in topological order so that changes to utils and configs propagate correctly
+RELOAD_MODULES = [
+    "src.config",
+    "src.utils.entity_extractor",
+    "src.utils.graph_store",
+    "src.utils.vector_store",
+    "src.utils.keyword_search",
+    "src.utils.hybrid_search",
+    "src.agents.state",
+    "src.agents.rag_agent",
+    "src.pipelines.ingestion",
+]
+for mod in RELOAD_MODULES:
     if mod in sys.modules:
         try:
             importlib.reload(sys.modules[mod])

@@ -30,10 +30,9 @@ except Exception:
 def tokenize(text: str) -> List[str]:
     """
     Tokenize input text for BM25.
-    Lowercases, splits by word characters, and filters out English stopwords.
+    Lowercases and splits by word characters.
     """
-    words = [word.strip(",.?!()[]{}:;\"'").lower() for word in text.split() if word.strip()]
-    return [w for w in words if w not in STOPWORDS]
+    return [word.strip(",.?!()[]{}:;\"'").lower() for word in text.split() if word.strip()]
 
 class BM25IndexManager:
     def __init__(self):

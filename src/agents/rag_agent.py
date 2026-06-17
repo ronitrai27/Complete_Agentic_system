@@ -285,12 +285,44 @@ def rag_retrieve(state: AgentState) -> Dict:
         context = get_hybrid_context(user_query, top_k=5)
         chunks = context.get("text_chunks", [])
         graph = context.get("graph_context", [])
-        emit(f"✅ Pinecone: retrieved {len(chunks)} chunk(s)", "success")
-        if graph:
-            emit(f"🕸️ Neo4j graph: found {len(graph)} entity relationship(s)", "success")
+        extracted_entities = context.get("extracted_entities", [])
+        graph_error = context.get("graph_error")
+        
+        # 1. Pinecone results emission
+        vector_chunks = [c for c in chunks if c.get("source") == "vector"]
+        emit(f"✅ Pinecone: retrieved {len(vector_chunks)} chunk(s)", "success")
+        for i, vc in enumerate(vector_chunks[:3]):
+            text_preview = vc["text"][:100].replace('\n', ' ')
+            score = vc.get("score", 0.0)
+            emit(f"   └─ [{i+1}] (Score: {score:.4f}) {text_preview}...", "step")
+            
+        # 2. Neo4j results emission
+        if graph_error:
+            emit(f"❌ Neo4j graph: query failed: {graph_error}", "warning")
         else:
-            emit("🕸️ Neo4j graph: no entity relations found for this query", "step")
-        emit("📚 BM25 keyword search: complete", "success")
+            if extracted_entities:
+                emit(f"🕸️ Neo4j graph: extracted entities: {extracted_entities}", "step")
+            else:
+                emit("🕸️ Neo4j graph: no entities extracted from query", "step")
+                
+            if graph:
+                emit(f"🕸️ Neo4j graph: found {len(graph)} relationship(s)", "success")
+                for i, rel in enumerate(graph[:10]):  # Limit trace output to avoid cluttering UI
+                    ent = rel.get("entity")
+                    r_type = rel.get("relation")
+                    neigh = rel.get("neighbor")
+                    emit(f"   └─ [{i+1}] ({ent})--[{r_type}]-->({neigh})", "success")
+            else:
+                emit("🕸️ Neo4j graph: no matching relationships found in database", "step")
+                
+        # 3. BM25 results emission
+        bm25_chunks = [c for c in chunks if c.get("source") == "bm25"]
+        emit(f"📚 BM25 keyword search: retrieved {len(bm25_chunks)} match(es)", "success")
+        for i, bc in enumerate(bm25_chunks[:3]):
+            text_preview = bc["text"][:100].replace('\n', ' ')
+            score = bc.get("score", 0.0)
+            emit(f"   └─ [{i+1}] (Score: {score:.2f}) {text_preview}...", "step")
+
         updates["rag_context"] = RagContext(
             text_chunks=chunks,
             graph_context=graph,
