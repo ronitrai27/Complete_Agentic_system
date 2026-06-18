@@ -1,203 +1,603 @@
-# How to Use & Installation Guide
+# AI Flow — Setup, Architecture, and Operations Guide
 
-## 1. Prerequisites & Environment Setup
-This project requires **Python `>=3.12,<3.14`** due to Apache Airflow compatibility.
+This project is an agentic RAG application with:
 
-Ensure you have Poetry installed, then set up the environment and install all dependencies:
-```bash
-# Install all project dependencies
+- A Streamlit chat interface
+- A LangGraph agent and router
+- Tavily and SerpAPI web search tools
+- Arcade MCP tools for Gmail, Google Docs, Notion, and Outlook
+- LlamaCloud/LlamaParse document parsing
+- Pinecone semantic retrieval
+- BM25 lexical retrieval
+- Neo4j knowledge-graph storage and visualization
+- SQLite conversation history
+- Human approval before saving a turn to long-term graph/vector memory
+
+## 1. Requirements
+
+- Python `>=3.12,<3.14`
+- Poetry
+- API credentials configured in `.env`
+- Pinecone and Neo4j instances
+- Windows users: run the main application normally, but use WSL2 or Docker for Airflow
+
+Install dependencies:
+
+```powershell
 poetry install
 ```
 
----
+Verify the environment:
 
-## 2. Installed Packages
-The project dependencies managed by Poetry are:
-
-### Core AI & LLM
-*   `langchain` - LLM application framework
-*   `langchain-community` - Community integrations for LangChain
-*   `langgraph` - Building stateful, multi-actor applications
-*   `openai` - OpenAI API client (embeddings via `text-embedding-3-small`, completions)
-*   `tavily-python` - Tavily search API client
-*   `google-search-results` - SerpApi client
-
-### Document Parsing & Indexing
-*   `llama-parse` - LlamaParse cloud document parser (PDFs, images, DOCX)
-*   `llama-cloud-services` - Supporting services for LlamaParse
-*   `llama-index-core` - SentenceSplitter chunking and LlamaIndex base utilities
-*   `rank-bm25` - BM25 keyword ranking algorithm for local keyword search
-*   `spacy` - NLP library for Named Entity Recognition (NER) and dependency parsing
-
-### Databases & Storage
-*   `pinecone` - Pinecone vector database client (renamed from `pinecone-client`)
-*   `neo4j` - Neo4j graph database client for knowledge graph storage
-
-### Connectivity & MCP Tools
-*   `arcadepy` - Arcade AI client for connecting to MCP tools (Gmail, Google Docs, etc.)
-
-### Web & Visualization
-*   `streamlit` - Web application builder for the UI
-*   `pyvis` - Interactive network visualization (knowledge graph rendering)
-
-### Infrastructure & Utilities
-*   `python-dotenv` - Environment variable management
-*   `pydantic` - Data validation and settings
-*   `loguru` - Advanced logging library
-*   `requests` - HTTP requests library
-*   `structlog (<25.5.0)` - Logging library pinned for Airflow compatibility
-*   `apache-airflow (==3.1.0)` - Workflow orchestration for background pipelines
-
----
-
-## 3. How Apache Airflow was Installed
-Because Poetry doesn't support the `--constraint` parameter and Airflow has strict dependency limits, we performed the following:
-
-1.  **Python Version Limit**: Updated `requires-python` in `pyproject.toml` to `">=3.12,<3.14"` (Airflow 3.1.0 does not support Python `>=3.14` yet).
-2.  **Install Command**: Ran:
-    ```bash
-    poetry add "apache-airflow==3.1.0"
-    ```
-3.  **`structlog` Version Pin**: Airflow 3.1.0 has an import error (`ImportError: cannot import name 'Styles' from 'structlog.dev'`) with `structlog >= 25.5.0`. We resolved this by pinning and downgrading `structlog`:
-    ```bash
-    poetry add "structlog<25.5.0"
-    ```
-
-You can verify the installation is working by running:
-```bash
-poetry run airflow version
+```powershell
+poetry run python --version
+poetry run pytest tests
 ```
 
----
+## 2. Environment Configuration
 
-## 4. How Pinecone was Fixed
-The `pinecone-client` package was renamed to `pinecone` by Pinecone. We migrated:
-```bash
-poetry remove pinecone-client
-poetry add pinecone
+Create a `.env` file in the repository root:
+
+```dotenv
+OPENAI_API_KEY=
+TAVILY_API_KEY=
+SERPAPI_API_KEY=
+LLAMA_CLOUD_API_KEY=
+ARCADE_API_KEY=
+
+PINECONE_API_KEY=
+PINECONE_INDEX_NAME=agentic-system
+
+NEO4J_URI=
+NEO4J_USERNAME=
+NEO4J_PASSWORD=
+NEO4J_DATABASE=neo4j
 ```
 
-## 5. How Arcade was Installed
-Arcade AI provides an MCP tool integration layer (Gmail, Google Docs, Sheets, etc.). Installed via:
-```bash
-poetry add arcadepy
-```
-Used in `src/tools/mcp.py` to interact with external user data sources through an authorized tool-calling interface.
+Never commit `.env`. The application no longer displays any part of the OpenAI key in the UI.
 
----
+Initialize Pinecone and the Neo4j entity constraint:
 
-## 6. Production Best Practices & Setup
-
-We have set up the project folder structure matching production standards, implementing 4 key best practices:
-
-### I. Thin DAGs (Separation of Concerns)
-*   **Concept**: Airflow DAGs should only schedule and orchestrate. They should never write core business or data logic inside the DAG files.
-*   **File**: [dags/document_ingestion_dag.py](file:///r:/python/ai_flow/dags/document_ingestion_dag.py)
-*   **Action**: The DAG file imports the core function `ingest_document_pipeline` from our python package [src/pipelines/ingestion.py](file:///r:/python/ai_flow/src/pipelines/ingestion.py) and executes it inside a `PythonOperator`.
-
-### II. Centralized Configuration Management
-*   **Concept**: Use environment variables (`.env`) validated at boot time via Pydantic schemas instead of scattering `os.getenv` calls across the codebase.
-*   **File**: [src/config.py](file:///r:/python/ai_flow/src/config.py)
-*   **Action**: Pydantic's `BaseSettings` automatically parses and validates environment keys. You can import variables using `from src.config import settings`.
-
-### III. Isolated Database Initialization Scripts
-*   **Concept**: DDL schemas, constraints, and indexes for databases (Pinecone, Neo4j) should be executed in setup/deployment scripts, not during active request processing.
-*   **File**: [scripts/init_databases.py](file:///r:/python/ai_flow/scripts/init_databases.py)
-*   **Action**: Running `poetry run python scripts/init_databases.py` connects to Pinecone & Neo4j, checks if the required indices/constraints are set up, and constructs them if missing.
-
-### IV. Mocking External API calls in Tests
-*   **Concept**: Production test pipelines should run quickly, reliably, and without spending money or requiring active API credentials or internet connections.
-*   **File**: [tests/test_agents.py](file:///r:/python/ai_flow/tests/test_agents.py)
-*   **Action**: Demonstrates how to write tests with `unittest.mock.patch` to intercept requests made by agents to OpenAI or search engines. Run via:
-    ```bash
-    poetry run pytest
-    ```
-
----
-
-## 7. RAG Pipeline Utility Modules (`src/utils/`)
-
-These 6 new utility modules power the document ingestion and retrieval pipeline.
-
-### `parser.py` — Document Parsing
-Parses uploaded files (PDF, DOCX, images) using **LlamaParse** and returns the extracted text as markdown.
-- **Libraries**: `llama_parse`, `loguru`, `src.config`
-
-### `vector_store.py` — Chunking + Semantic Search
-Splits text into chunks using **SentenceSplitter**, generates embeddings via **OpenAI `text-embedding-3-small`**, and stores/queries them in **Pinecone**.
-- **Libraries**: `openai`, `pinecone`, `llama_index.core.node_parser.SentenceSplitter`, `loguru`
-
-### `graph_store.py` — Knowledge Graph Storage & Lookup
-Saves entities and relationships to **Neo4j**, retrieves direct entity neighbors for context enrichment, and computes **shortest path** between any two entities.
-- **Libraries**: `neo4j`, `loguru`, `src.config`
-
-### `keyword_search.py` — BM25 Keyword Search
-Maintains a persistent, disk-backed **BM25 keyword index** over all ingested document chunks for fast lexical retrieval.
-- **Libraries**: `rank_bm25`, `pickle`, `loguru`
-
-### `hybrid_search.py` — Multi-Route Context Retrieval
-Combines results from **Pinecone vector search**, **BM25 keyword search**, and **Neo4j entity graph neighbors** into a single deduplicated context bundle ready for the LLM.
-- **Libraries**: `src.utils.vector_store`, `src.utils.keyword_search`, `src.utils.entity_extractor`, `src.utils.graph_store`
-
-### `entity_extractor.py` — NLP Entity & Relation Extraction
-Extracts named entities (people, orgs, locations) and Subject-Verb-Object triplets from raw text using **spaCy**, used to populate the knowledge graph.
-- **Libraries**: `spacy (en_core_web_sm)`
-
----
-
-## 8. Background Ingestion Pipeline (`src/pipelines/ingestion.py`)
-
-The `ingest_document_pipeline(file_path, document_id)` function is the **slow-path** background worker triggered after every file upload:
-
-```
-Upload File
-    │
-    └──► ingest_document_pipeline()
-              1. LlamaParse    → raw text
-              2. SentenceSplitter → chunks
-              3. OpenAI embed  → Pinecone index
-              4. spaCy NER     → entities + relations
-              5. Neo4j merge   → knowledge graph
-              6. BM25 index    → keyword search
+```powershell
+poetry run python scripts/init_databases.py
 ```
 
----
+## 3. Running the Application
 
-## 9. Production Directory Structure
+### Streamlit application
+
+From the project root:
+
+```powershell
+poetry run streamlit run ui/app.py
+```
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+The UI supports:
+
+- Chatting with the agent
+- Uploading supported documents
+- Watching background-ingestion progress
+- Approving or rejecting long-term memory
+- Completing MCP OAuth authorization
+- Opening the Neo4j relationship explorer
+
+### CLI chat
+
+```powershell
+poetry run python scripts/chat_cli.py
+```
+
+The CLI creates a conversation ID, runs the same LangGraph agent, prints progress events, handles authorization interrupts, and asks whether a turn should be saved to long-term memory.
+
+### Run tests
+
+```powershell
+poetry run pytest tests -q
+```
+
+Use `pytest tests`, rather than unrestricted `pytest`, because files named `test_*.py` under `scripts/` and `src/utils/` are live connectivity utilities and may call external services during collection.
+
+## 4. Updated Project Structure
 
 ```text
 ai_flow/
-├── .github/workflows/test.yml      # Automated CI testing on push/PR
+├── dags/
+│   └── document_ingestion_dag.py
 ├── data/
-│   └── bm25_index.pkl              # Persistent BM25 keyword search index
-├── dags/                           # Thin Airflow orchestrator DAGs
-│   └── document_ingestion_dag.py   # Background ingestion DAG
-├── src/                            # Main code package
-│   ├── config.py                   # Settings loader (Pydantic BaseSettings)
-│   ├── agents/                     # LLM/LangGraph agents
-│   ├── tools/                      # MCP / DB / API agent tools
-│   │   ├── mcp.py                  # Arcade MCP tool integrations
-│   │   └── search.py               # Web search tools
-│   ├── pipelines/
-│   │   └── ingestion.py            # Full slow-path ingestion pipeline
-│   └── utils/
-│       ├── entity_extractor.py     # spaCy NER + SVO relation extraction
-│       ├── parser.py               # LlamaParse document parser
-│       ├── vector_store.py         # Pinecone + OpenAI embedding store
-│       ├── graph_store.py          # Neo4j entity graph store
-│       ├── keyword_search.py       # BM25 keyword search index
-│       └── hybrid_search.py        # Combined retrieval orchestrator
-├── ui/                             # Streamlit Frontend
-│   ├── app.py                      # Main App entry point
-│   ├── components/                 # Modular UI widgets
-│   └── pages/                      # Subpages
+│   ├── uploads/                 # Safe content-addressed uploads; gitignored
+│   ├── parsed/                  # Cached LlamaCloud markdown; gitignored
+│   ├── conversations.db         # Chat history; gitignored
+│   ├── ingestion_registry.db    # Idempotency state; gitignored
+│   └── bm25_index.pkl           # Local lexical index; gitignored
 ├── scripts/
-│   └── init_databases.py           # Pinecone & Neo4j setup script
-└── tests/
-    ├── test_agents.py              # Mock-based agent tests
-    └── test_rag_utilities.py       # RAG utility unit tests
+│   ├── chat_cli.py
+│   ├── clean_neo4j.py
+│   ├── init_databases.py
+│   ├── reingest_docs.py
+│   ├── test_cli.py
+│   ├── test_mcp_gmail.py
+│   └── test_mcp_math.py
+├── src/
+│   ├── agents/
+│   │   ├── rag_agent.py
+│   │   └── state.py
+│   ├── pipelines/
+│   │   └── ingestion.py
+│   ├── tools/
+│   │   ├── conversation_store.py
+│   │   ├── mcp.py
+│   │   └── search.py
+│   └── utils/
+│       ├── entity_extractor.py
+│       ├── graph_store.py
+│       ├── hybrid_search.py
+│       ├── keyword_search.py
+│       ├── parser.py
+│       ├── uploads.py           # New safe-upload service
+│       └── vector_store.py
+├── tests/
+│   ├── test_agents.py
+│   ├── test_rag_utilities.py
+│   └── test_uploads_and_history.py
+└── ui/
+    ├── app.py
+    └── pages/
+        └── relationships.py     # New Neo4j graph explorer
 ```
 
-<!-- ---------- -->
-**Fast Path (LlamaParse Text Extraction):** Provides instant, high-speed context to the agent so you can chat with the uploaded document immediately.
-**Slow Path (Background Knowledge Builder):** Concurrently splits text into chunks, generates vector embeddings, indexes them in Pinecone, performs spaCy entity and relationship extraction, ingests the resulting knowledge graph into Neo4j, and adds the text to the BM25 index.
+## 5. Recent Updates
+
+### 5.1 Neo4j relationship explorer
+
+The chat sidebar now contains a **View relationships** button.
+
+It opens `ui/pages/relationships.py`, which:
+
+- Reads connected entities and relationships from Neo4j
+- Displays an interactive directed PyVis graph
+- Colors nodes by entity type
+- Supports entity/relationship search
+- Supports entity-type filtering
+- Limits graph size between 100 and 5,000 relationships
+- Shows node, relationship, and relationship-type metrics
+- Provides a relationship table for easier inspection
+
+The page is read-only. It does not modify or delete Neo4j data.
+
+Relevant implementation:
+
+- `ui/pages/relationships.py`
+- `src/utils/graph_store.py`
+  - `get_graph_snapshot()`
+  - `get_entity_labels()`
+
+### 5.2 Safer uploads
+
+Uploads now pass through `src/utils/uploads.py`.
+
+Safety improvements:
+
+- Filename path traversal is removed
+- Filenames are sanitized
+- File extensions are allowlisted
+- Empty files are rejected
+- Upload size is limited to 25 MB
+- PDF, DOCX, PNG, and JPEG signatures are checked
+- Files are stored atomically using a temporary `.part` file
+- Local paths use generated IDs rather than user-controlled filenames
+- Upload identity uses a SHA-256 checksum
+
+Supported extensions:
+
+```text
+.pdf .docx .txt .png .jpg .jpeg .md
+```
+
+Stored uploads use this structure:
+
+```text
+data/uploads/<conversation_id>/doc_<sha256>.<extension>
+```
+
+### 5.3 Idempotent ingestion
+
+Uploading the exact same content no longer creates a new random document identity.
+
+The ingestion pipeline records each document in:
+
+```text
+data/ingestion_registry.db
+```
+
+Possible states:
+
+- `running`
+- `completed`
+- `failed`
+
+Behavior:
+
+- Completed documents are reused
+- Simultaneous duplicate ingestion is skipped
+- Failed ingestion can be retried
+- A stale `running` record older than one hour can be reclaimed
+- Pinecone vector IDs remain deterministic
+- BM25 already replaces chunks for an existing document ID
+- Neo4j uses `MERGE` for entity and relationship upserts
+
+LlamaCloud parsing is also cached by file checksum:
+
+```text
+data/parsed/<sha256>.md
+```
+
+The chat fast path and background ingestion can therefore reuse the same parsed result instead of paying for and waiting on two identical LlamaCloud parses.
+
+### 5.4 Conversation history
+
+Each generated turn now has its own `turn_id`.
+
+Every successful answer is atomically written to SQLite as:
+
+```text
+conversation
+└── turn
+    ├── user message
+    └── assistant message
+```
+
+Improvements:
+
+- Each turn is persisted even before optional long-term-memory approval
+- Replaying the same turn does not duplicate messages
+- Follow-up questions receive recent conversation context
+- The router receives a smaller recent-history window
+- The answer model receives a larger bounded history window
+- Prompt history has a character budget to avoid uncontrolled growth
+- Approved conversation memories use per-turn Pinecone IDs
+- Conversation vectors can be retrieved only for their own conversation ID
+
+Human approval still controls whether a turn is additionally extracted into Neo4j and indexed as long-term Pinecone conversation memory.
+
+## 6. Application Data Flow
+
+### Chat request
+
+```text
+User question
+    ↓
+LangGraph router
+    ├── search → Tavily + SerpAPI
+    ├── rag    → Pinecone + BM25 + Neo4j
+    ├── mcp    → Arcade tools
+    └── direct → LLM
+    ↓
+Answer generation with recent conversation history
+    ↓
+Atomic SQLite turn persistence
+    ↓
+Human memory approval
+    ├── approved → Neo4j + Pinecone long-term memory
+    └── rejected → conversation history remains in SQLite only
+```
+
+### Upload request
+
+```text
+Upload bytes
+    ↓
+Size, extension, signature, and filename validation
+    ↓
+SHA-256 document identity
+    ↓
+Safe atomic local storage
+    ↓
+Ingestion registry claim
+    ↓
+LlamaCloud parse or cached markdown
+    ↓
+SentenceSplitter chunks
+    ├── OpenAI embeddings → Pinecone
+    ├── spaCy entities/relations → Neo4j
+    └── tokens → BM25
+```
+
+## 7. Script Reference
+
+### `scripts/init_databases.py`
+
+Creates or verifies:
+
+- The Pinecone index
+- The Neo4j unique constraint on `Entity.name`
+
+```powershell
+poetry run python scripts/init_databases.py
+```
+
+### `scripts/chat_cli.py`
+
+Runs the main agent in an interactive terminal:
+
+```powershell
+poetry run python scripts/chat_cli.py
+```
+
+### `scripts/reingest_docs.py`
+
+Reprocesses the project’s configured sample documents through the ingestion pipeline:
+
+```powershell
+poetry run python scripts/reingest_docs.py
+```
+
+Review the file paths in the script before running it.
+
+### `scripts/clean_neo4j.py`
+
+Destructively clears graph data. Inspect the script and confirm the target database before use:
+
+```powershell
+poetry run python scripts/clean_neo4j.py
+```
+
+Do not run this against a production database without a backup.
+
+### `scripts/test_mcp_math.py`
+
+Runs an Arcade tool that does not require OAuth:
+
+```powershell
+poetry run python scripts/test_mcp_math.py
+```
+
+### `scripts/test_mcp_gmail.py`
+
+Tests Gmail authorization and lists Gmail threads:
+
+```powershell
+poetry run python scripts/test_mcp_gmail.py
+```
+
+This accesses the configured external account and should be treated as a live integration check, not a unit test.
+
+### `scripts/test_cli.py`
+
+Runs a broad ingestion and interactive-agent diagnostic flow:
+
+```powershell
+poetry run python scripts/test_cli.py
+```
+
+This can call LlamaCloud, OpenAI, Pinecone, and Neo4j and may incur API usage.
+
+## 8. Apache Airflow: What It Does Here
+
+Airflow is not the chat server and should not run each user question.
+
+Use Airflow for durable, observable background workflows such as:
+
+- Scheduled document ingestion
+- Retrying failed ingestion
+- Nightly re-indexing
+- Rebuilding BM25
+- Knowledge-graph maintenance
+- Data-quality checks
+- Cleaning old upload files
+- Sending failure notifications
+
+The Streamlit thread is useful for immediate background work during development. Airflow becomes valuable when ingestion must survive application restarts and provide retries, logs, schedules, ownership, and operational visibility.
+
+## 9. Current Airflow Status
+
+Airflow `3.1.0` is installed, but the current DAG requires repair before use:
+
+```text
+dags/document_ingestion_dag.py
+```
+
+Current issues:
+
+1. It imports `ingest_documents_pipeline`, but the implemented function is `ingest_document_pipeline`.
+2. `ingest_document_pipeline()` requires a file path and document context, but the DAG currently supplies no arguments.
+3. The DAG uses an older `PythonOperator` import path.
+4. A daily schedule is not enough to tell Airflow which uploaded document should be processed.
+
+Do not expect this DAG to appear successfully until those points are addressed.
+
+The best next implementation is an ingestion queue:
+
+```text
+Streamlit upload
+    ↓
+Create queued ingestion record
+    ↓
+Airflow scheduled DAG reads pending records
+    ↓
+One task processes each document
+    ↓
+Registry becomes completed or failed
+```
+
+This preserves the existing ingestion function while moving durability and retries into Airflow.
+
+## 10. Practising Airflow Locally
+
+Apache Airflow does not natively support Windows. Use WSL2 or Docker Desktop.
+
+### Recommended beginner path: WSL2 standalone
+
+Inside Ubuntu/WSL:
+
+```bash
+export AIRFLOW_HOME=~/airflow
+airflow standalone
+```
+
+`airflow standalone` initializes the metadata database, creates an admin user, and starts the required local components.
+
+Open:
+
+```text
+http://localhost:8080
+```
+
+Put or link this project’s `dags` folder into:
+
+```text
+$AIRFLOW_HOME/dags
+```
+
+Useful learning commands:
+
+```bash
+airflow version
+airflow dags list
+airflow dags list-import-errors
+airflow dags show document_ingestion_pipeline
+airflow tasks list document_ingestion_pipeline
+airflow tasks test <dag_id> <task_id> 2026-06-18
+airflow dags test <dag_id> 2026-06-18
+airflow dags trigger <dag_id>
+airflow dags pause <dag_id>
+airflow dags unpause <dag_id>
+```
+
+Start with this practice loop:
+
+1. Write a tiny DAG with one Python task.
+2. Confirm it appears in the UI.
+3. Run `airflow dags list-import-errors`.
+4. Test the task with `airflow tasks test`.
+5. Test the complete DAG with `airflow dags test`.
+6. Trigger it manually in the UI.
+7. Add retries and deliberately fail the first attempt.
+8. Read task logs in the UI.
+9. Add a schedule only after manual execution works.
+
+### Docker Compose learning environment
+
+Airflow’s official Docker Compose quick start uses multiple services including PostgreSQL, Redis, scheduler, DAG processor, API server, worker, and triggerer.
+
+Typical commands:
+
+```bash
+docker compose up airflow-init
+docker compose up -d
+docker compose ps
+docker compose logs -f airflow-scheduler
+docker compose run airflow-cli airflow dags list
+docker compose down
+```
+
+This is excellent for learning CeleryExecutor and distributed task execution, but the official quick-start Compose file is not a secure production deployment.
+
+## 11. Production-Like Airflow Architecture
+
+For a serious deployment:
+
+```text
+Git repository
+    ↓
+CI tests DAG imports and tasks
+    ↓
+Versioned Airflow image
+    ↓
+Kubernetes + official Airflow Helm chart
+    ├── API server
+    ├── Scheduler
+    ├── DAG processor
+    ├── Triggerer
+    └── Workers
+         ↓
+PostgreSQL metadata database
+Object storage for logs
+Secret manager for credentials
+Monitoring and alerts
+```
+
+Production recommendations:
+
+- Use PostgreSQL, not SQLite, for Airflow metadata
+- Build a pinned custom image containing project dependencies
+- Store secrets in Airflow Connections or an external secret backend
+- Do not hardcode API keys in DAG files
+- Keep DAG files thin; call business logic from `src/`
+- Make tasks idempotent
+- Set explicit retries and retry delays
+- Configure timeouts and concurrency limits
+- Use remote task logging
+- Add failure notifications
+- Test DAG imports in CI
+- Use separate development, staging, and production environments
+- Avoid local files as the only handoff between distributed workers
+
+For this project, uploaded files should eventually move from local `data/uploads` storage to shared object storage such as S3, GCS, or Azure Blob before Airflow workers process them.
+
+## 12. Suggested Airflow Learning Project
+
+Build this in four stages:
+
+### Stage 1 — Health-check DAG
+
+- Task 1: verify required environment settings
+- Task 2: connect to Pinecone
+- Task 3: connect to Neo4j
+
+### Stage 2 — Single-document ingestion
+
+- Supply one known file path through DAG parameters
+- Call `ingest_document_pipeline()`
+- Observe retries and logs
+
+### Stage 3 — Queue-based ingestion
+
+- Read pending records from an ingestion queue table
+- Dynamically map one task per document
+- Record completion or failure
+
+### Stage 4 — Production simulation
+
+- Run Airflow in Docker Compose
+- Use PostgreSQL
+- Run multiple workers
+- Add remote/shared document storage
+- Add alerts and dashboard monitoring
+
+This progression teaches the real Airflow concepts without rewriting the agent or ingestion logic.
+
+## 13. Tests Added for the Updates
+
+`tests/test_uploads_and_history.py` verifies:
+
+- Unsafe filenames are sanitized
+- Identical uploads receive the same document ID
+- Duplicate local storage is avoided
+- Spoofed PDFs are rejected
+- Conversation turns are ordered correctly
+- Replaying a turn does not duplicate its messages
+
+Run:
+
+```powershell
+poetry run pytest tests/test_uploads_and_history.py -q
+```
+
+Run the full unit-test folder:
+
+```powershell
+poetry run pytest tests -q
+```
+
+## 14. Useful Official Airflow References
+
+- Airflow 3.1 Quick Start: https://airflow.apache.org/docs/apache-airflow/3.1.0/start.html
+- Airflow 3.1 Docker Compose: https://airflow.apache.org/docs/apache-airflow/3.1.0/howto/docker-compose/index.html
+- Airflow Best Practices: https://airflow.apache.org/docs/apache-airflow/3.1.0/best-practices.html
+- Airflow CLI Reference: https://airflow.apache.org/docs/apache-airflow/3.1.0/cli-and-env-variables-ref.html

@@ -26,6 +26,7 @@ if "entity_ruler" not in nlp.pipe_names:
     _custom_features = [
         "AI Assistant", "Authentication", "Analytics",
         "Project Atlas", "Project Orion", "Project Nebula",
+        "Project WeKraft", "WeKraft", "AWS infrastructure",
         "Atlas", "Orion", "Nebula",
     ]
     
@@ -194,9 +195,9 @@ def extract_entities(text: str) -> List[Dict[str, str]]:
                         words = [t.text for t in chunk if t.pos_ != "DET"]
                         chunk_text = " ".join(words).strip()
 
-                        # Title-case if it's a PERSON or consists of proper nouns
-                        is_proper_chunk = all(t.pos_ == "PROPN" for t in chunk if t.text.lower() not in ("the", "a", "an"))
-                        if label == "PERSON" or is_proper_chunk:
+                        # Normalize person names, but preserve product/brand casing
+                        # such as "WeKraft" rather than changing it to "Wekraft".
+                        if label == "PERSON":
                             chunk_text = chunk_text.title()
 
                         # Check if all words in the proper noun chunk start with upper case
@@ -327,6 +328,7 @@ def extract_knowledge_graph_elements(text: str) -> Dict[str, Any]:
     # Filter triplets so that subject and object relate to extracted entities if possible,
     # or keep them if they are clean noun phrases.
     cleaned_relations = []
+    seen_relations = set()
     entity_names = {ent["name"].lower() for ent in entities}
     
     for subj, rel, obj in triplets:
@@ -345,11 +347,19 @@ def extract_knowledge_graph_elements(text: str) -> Dict[str, Any]:
         obj_match = _clean_and_validate_node(obj_match)
         
         if subj_match and obj_match and subj_match != obj_match:
-            cleaned_relations.append({
+            relation = {
                 "source": subj_match,
                 "type": rel.upper().replace(" ", "_"),
                 "target": obj_match
-            })
+            }
+            relation_key = (
+                relation["source"].casefold(),
+                relation["type"],
+                relation["target"].casefold(),
+            )
+            if relation_key not in seen_relations:
+                seen_relations.add(relation_key)
+                cleaned_relations.append(relation)
             
     return {
         "entities": entities,

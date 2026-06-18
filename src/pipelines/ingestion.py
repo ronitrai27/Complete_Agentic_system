@@ -191,7 +191,7 @@ def ingest_document_pipeline(
         relation_parts = []
         for r in relations[:3]:
             relation_parts.append(f"{r['source']}->{r['target']}")
-        relation_preview = f"Found {len(relations)} relationship(s) (e.g., {', '.join(relation_parts)})" if relations else "No relationships found"
+        relation_preview = f"Found {len(relations)} unique relationship(s) (e.g., {', '.join(relation_parts)})" if relations else "No relationships found"
         
         details_extraction = f"Extracted {len(entities)} entities: {entity_preview}\n\n{relation_preview}"
         _update_progress(conversation_id, document_id, 80, "Entity extraction complete", details_extraction, filename)
@@ -216,7 +216,7 @@ def ingest_document_pipeline(
             f"✅ **Ingestion Summary:**\n"
             f"- **Chunks Ingested:** {chunks_count}\n"
             f"- **Entities Extracted:** {len(entities)}\n"
-            f"- **Relationships Extracted:** {len(relations)}\n"
+            f"- **Unique Relationships Extracted:** {len(relations)}\n"
             f"- **Graph stored:** Neo4j\n"
             f"- **Lexical index:** BM25 updated\n"
             f"\n**Entities Preview:**\n{entity_preview}"
