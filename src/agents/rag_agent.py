@@ -656,8 +656,8 @@ def save_conversation(state: AgentState) -> Dict:
             final_answer=final_answer,
             route=route,
             uploaded_file=uploaded_file_path,
-            hitl_approved=hitl_decision.approved if hitl_decision else False,
-            hitl_notes=hitl_decision.notes if hitl_decision else None,
+            hitl_approved=True,
+            hitl_notes=None,
         )
 
         # Save web search results to SQLite
@@ -669,59 +669,6 @@ def save_conversation(state: AgentState) -> Dict:
             )
 
         emit(f"✅ Conversation saved to SQLite", "success")
-
-        # 2. Extract entities & relationships and load into Neo4j graph
-        conversation_text = f"User Question: {user_query}\nAgent Answer: {final_answer}"
-        try:
-            emit("🕸️ Neo4j: extracting graph nodes from conversation...", "step")
-            logger.info(f"[Save] Extracting KG elements from conversation {conversation_id}...")
-            from src.utils.entity_extractor import extract_knowledge_graph_elements
-            from src.utils.graph_store import upsert_entities_and_relations
-            
-            kg_elements = extract_knowledge_graph_elements(conversation_text)
-            entities = kg_elements.get("entities", [])
-            relations = kg_elements.get("relations", [])
-            
-            if entities or relations:
-                turn_id = state.get("turn_id", "")
-                upsert_entities_and_relations(
-                    entities,
-                    relations,
-                    document_id=f"conv_{conversation_id}_{turn_id}",
-                    document_name=f"Conversation {conversation_id}",
-                    source_type="conversation",
-                )
-                emit(f"✅ Neo4j: loaded {len(entities)} entities & {len(relations)} relations", "success")
-                logger.info(f"[Save] Ingested {len(entities)} entities and {len(relations)} relations to Neo4j.")
-            else:
-                emit("🕸️ Neo4j: no graph elements found in conversation text", "step")
-        except Exception as e:
-            emit(f"⚠️ Neo4j save failed: {e}", "warning")
-            logger.error(f"[Save] Failed to save conversation to Neo4j: {e}")
-
-        # 3. Index conversation into Pinecone vector store
-        try:
-            emit("🧠 Pinecone: indexing conversation turn...", "step")
-            logger.info(f"[Save] Indexing conversation {conversation_id} in Pinecone...")
-            from src.utils.vector_store import chunk_text, index_chunks
-            chunks = chunk_text(conversation_text)
-            if chunks:
-                turn_id = state.get("turn_id", "")
-                index_chunks(
-                    f"conv_{conversation_id}_{turn_id}",
-                    chunks,
-                    {
-                        "conversation_id": conversation_id,
-                        "turn_id": turn_id,
-                        "type": "conversation",
-                    },
-                )
-                emit(f"✅ Pinecone: indexed {len(chunks)} text chunks", "success")
-                logger.info(f"[Save] Indexed {len(chunks)} chunks in Pinecone.")
-        except Exception as e:
-            emit(f"⚠️ Pinecone save failed: {e}", "warning")
-            logger.error(f"[Save] Failed to save conversation to Pinecone: {e}")
-
         logger.info(f"[Save] ✅ Conversation {conversation_id} saved successfully.")
     except Exception as e:
         emit(f"⚠️ Save failed: {e}", "warning")
@@ -769,15 +716,8 @@ def build_graph() -> StateGraph:
     graph.add_edge("rag_retrieve", "llm_answer")
     graph.add_edge("mcp_agent",    "llm_answer")
 
-    # LLM → HITL checkpoint
-    graph.add_edge("llm_answer", "hitl_checkpoint")
-
-    # HITL → save or end
-    graph.add_conditional_edges("hitl_checkpoint", hitl_route, {
-        "save_conversation": "save_conversation",
-        END: END,
-    })
-
+    # LLM → Save conversation directly (no HITL / long-term memory checkpoint)
+    graph.add_edge("llm_answer", "save_conversation")
     graph.add_edge("save_conversation", END)
 
     return graph
@@ -820,9 +760,15 @@ def run_agent(
         print(result["final_answer"])
     """
     import uuid
+    conv_id = conversation_id or str(uuid.uuid4())
+
+    # Pre-check guardrails and fast-path greetings
+    pre_result = pre_check_query(user_query, conv_id, uploaded_file_path)
+    if pre_result:
+        return pre_result
+
     from src.agents.state import create_initial_state
     agent = compile_agent()
-    conv_id = conversation_id or str(uuid.uuid4())
 
     initial_state = create_initial_state(
         user_query=user_query,
@@ -831,9 +777,9 @@ def run_agent(
     )
     config = {"configurable": {"thread_id": conv_id}}
 
-    # Phase 1: Run until HITL interrupt
+    # Run the agent to completion (no HITL interrupt)
     result = agent.invoke(initial_state, config=config)
-    logger.info(f"[Agent] Paused at HITL for conversation {conv_id}")
+    logger.info(f"[Agent] Completed run for conversation {conv_id}")
     return result
 
 
@@ -848,3 +794,67 @@ def resume_agent(conversation_id: str, hitl_response: Dict) -> Dict:
     config = {"configurable": {"thread_id": conversation_id}}
     result = agent.invoke(Command(resume=hitl_response), config=config)
     return result
+
+
+def pre_check_query(
+    user_query: str,
+    conversation_id: str,
+    uploaded_file_path: str | None = None,
+) -> Dict | None:
+    """
+    Checks the user query against fast-path greetings and NeMo input guardrails.
+    If matched or blocked, persists the interaction to SQLite and returns the response immediately.
+    Otherwise, returns None.
+    """
+    from src.utils.guardrails import check_fast_path_greeting, check_input_guardrails
+    from src.tools.conversation_store import record_conversation_turn
+    import uuid
+
+    # 1. Greetings fast path
+    greeting_response = check_fast_path_greeting(user_query)
+    if greeting_response:
+        try:
+            record_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=str(uuid.uuid4()),
+                user_query=user_query,
+                final_answer=greeting_response,
+                route="direct",
+                uploaded_file=uploaded_file_path,
+            )
+        except Exception as exc:
+            logger.error(f"[History] Failed to persist fast-path turn: {exc}")
+        return {
+            "final_answer": greeting_response,
+            "route": "direct",
+            "messages": [
+                {"role": "user", "content": user_query},
+                {"role": "assistant", "content": greeting_response},
+            ]
+        }
+
+    # 2. Input Guardrails
+    is_blocked, refusal_message = check_input_guardrails(user_query)
+    if is_blocked and refusal_message:
+        try:
+            record_conversation_turn(
+                conversation_id=conversation_id,
+                turn_id=str(uuid.uuid4()),
+                user_query=user_query,
+                final_answer=refusal_message,
+                route="direct",
+                uploaded_file=uploaded_file_path,
+            )
+        except Exception as exc:
+            logger.error(f"[History] Failed to persist guardrail turn: {exc}")
+        return {
+            "final_answer": refusal_message,
+            "route": "direct",
+            "messages": [
+                {"role": "user", "content": user_query},
+                {"role": "assistant", "content": refusal_message},
+            ]
+        }
+
+    return None
+

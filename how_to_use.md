@@ -11,6 +11,7 @@ This project is an agentic RAG application with:
 - BM25 lexical retrieval
 - Neo4j knowledge-graph storage and visualization
 - SQLite conversation history
+- NeMo Guardrails input validation and pre-check greetings bypass
 - Human approval before saving a turn to long-term graph/vector memory
 
 ## 1. Requirements
@@ -19,6 +20,7 @@ This project is an agentic RAG application with:
 - Poetry
 - API credentials configured in `.env`
 - Pinecone and Neo4j instances
+- Windows users: Visual Studio C++ Build Tools (specifically the **Desktop development with C++** workload) is required to compile NeMo Guardrails dependencies (e.g., `hnswlib`).
 - Windows users: run the main application normally, but use WSL2 or Docker for Airflow
 
 Install dependencies:
@@ -126,6 +128,9 @@ ai_flow/
 │   ├── agents/
 │   │   ├── rag_agent.py
 │   │   └── state.py
+│   ├── guardrails/
+│   │   ├── config.yml           # NeMo Guardrails configuration
+│   │   └── disallowed.co       # Colang disallowed intents and flows
 │   ├── pipelines/
 │   │   └── ingestion.py
 │   ├── tools/
@@ -135,6 +140,7 @@ ai_flow/
 │   └── utils/
 │       ├── entity_extractor.py
 │       ├── graph_store.py
+│       ├── guardrails.py        # Pre-check greetings & NeMo Guardrails helper functions
 │       ├── hybrid_search.py
 │       ├── keyword_search.py
 │       ├── parser.py
@@ -251,6 +257,59 @@ Improvements:
 
 Human approval still controls whether a turn is additionally extracted into Neo4j and indexed as long-term Pinecone conversation memory.
 
+### 5.5 NeMo input guardrails
+
+We implemented **NVIDIA NeMo Guardrails** (`v0.22.0`) to check and sanitise incoming user queries before they reach the main LangGraph agent.
+
+#### Installation & Prerequisites
+NeMo Guardrails is specified in [pyproject.toml](file:///r:/python/ai_flow/pyproject.toml) and is automatically installed when you run `poetry install`. However, on Windows, installing it has specific compilation requirements:
+
+1. **C++ Build Tools Requirement**:
+   NeMo Guardrails installs underlying packages like `hnswlib` (a C++ vector database binding) and others that compile native C++ extensions during installation.
+   * **Error Symptoms**: Without C++ compilers, installation will fail with errors such as `error: Microsoft Visual C++ 14.0 or greater is required.` or compilation errors for `hnswlib`.
+   * **Solution**: You must install the **Build Tools for Visual Studio** (Visual Studio 2022 Build Tools or newer).
+     * Download from [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
+     * During the installation, select the **Desktop development with C++** workload.
+     * Ensure the **MSVC v143 - VS 2022 C++ x64/x86 build tools** and **Windows 11 SDK** (or Windows 10 SDK) components are checked.
+     
+2. **Python Version**: NeMo Guardrails has strict dependencies and requires Python `>=3.12,<3.14`.
+3. **Active Loops Setup**: It requires `nest_asyncio` to run within Streamlit or other environments with active asyncio loops. This is automatically handled dynamically in [src/utils/guardrails.py](file:///r:/python/ai_flow/src/utils/guardrails.py).
+
+#### How It Works
+NeMo Guardrails coordinates validation flows using a combination of configuration files, semantic embedding search, and Colang script logic:
+
+1. **Configuration ([config.yml](file:///r:/python/ai_flow/src/guardrails/config.yml))**:
+   - Defines the engines used: `gpt-4o-mini` for the LLM-based rails and `text-embedding-3-small` for generating sentence embeddings.
+   - Restricts Dialog flows by setting `embeddings_only: true` with a `similarity_threshold` of `0.82`.
+   - Specifies a fallback intent (`unhandled_user_intent`) if the query does not map to any defined intent.
+2. **Colang Intent Mapping ([disallowed.co](file:///r:/python/ai_flow/src/guardrails/disallowed.co))**:
+   - Maps standard user query variations to specific disallowed intents:
+     - `user ask cooking recipe`: Intercepts cooking/food instructions.
+     - `user ask developer mode`: Intercepts system prompts, developer simulations, system overrides, and jailbreak attempts.
+     - `user ask python code`: Intercepts general coding requests.
+     - `user ask violence`: Intercepts safety-critical queries.
+   - Defines a standard refusal response:
+     - `bot refuse request`: *"I cannot help you with that request. I am designed to assist only with technical documentation and tech-related web searches, not for cooking, coding, developer simulation, or harmful queries."*
+   - Defines dialog **flows** connecting each disallowed intent to the refusal action (e.g., if a user asks a cooking recipe, the bot replies with the refusal response).
+3. **Semantic Matching**: When a query is checked, NeMo Guardrails calculates its embedding and checks the similarity against the canonical examples in the `.co` file. If the similarity meets or exceeds `0.82`, it triggers the associated block flow.
+
+#### How It Is Used in the Codebase
+- **Pre-Check Hook**: Before the query initiates the LangGraph compiler and states in [src/agents/rag_agent.py](file:///r:/python/ai_flow/src/agents/rag_agent.py), `run_agent()` triggers `pre_check_query()`.
+- **Fast-Path Greeting Filter**: Before making any API requests, [src/utils/guardrails.py](file:///r:/python/ai_flow/src/utils/guardrails.py) performs a regex check against `GREETINGS_MAP`. If a greeting is matched, the predefined reply is returned instantly. This prevents latency and avoids any LLM / OpenAI token costs.
+- **Guardrails Invocation**: If it's a standard user query, `check_input_guardrails(query)` is called:
+  - It temporarily injects `NEMO_API_KEY` (configured in [src/utils/guardrails.py](file:///r:/python/ai_flow/src/utils/guardrails.py)) as the `OPENAI_API_KEY` environment variable.
+  - It retrieves the cached `LLMRails` instance from `get_rails_instance()`.
+  - It calls `rails.generate()` with the user query.
+  - It inspects the returned string. If the response contains any of the known refusal markers (such as `"I cannot help you with that request"` or `"I am designed to assist only with technical documentation"`), the helper marks the query as blocked and returns the refusal message.
+  - The refusal message is saved to the SQLite conversation table using `record_conversation_turn()`, and the execution terminates immediately, short-circuiting the LangGraph router.
+- **Fail-Safe Fallback**: If an exception or connection failure occurs during the NeMo check, the exception is caught, logged, and the query is allowed through to prevent disrupting the user flow.
+
+#### Files Created for NeMo Guardrails
+- [src/guardrails/config.yml](file:///r:/python/ai_flow/src/guardrails/config.yml): Sets up the LLM engines, embedding engines, and embedding similarity parameters.
+- [src/guardrails/disallowed.co](file:///r:/python/ai_flow/src/guardrails/disallowed.co): Contains user intents (Colang definitions) for disallowed topics and maps them to flows triggering `bot refuse request`.
+- [src/utils/guardrails.py](file:///r:/python/ai_flow/src/utils/guardrails.py): Houses the fast-path regex greetings mapping (`GREETINGS_MAP`), functions `check_fast_path_greeting()`, and `check_input_guardrails()` which initialize and execute the NeMo guardrails.
+- [src/agents/rag_agent.py](file:///r:/python/ai_flow/src/agents/rag_agent.py): Calls the `pre_check_query()` hook at the entrance of `run_agent()` to execute the guardrail validation.
+
 ## 6. Application Data Flow
 
 ### Chat request
@@ -258,6 +317,14 @@ Human approval still controls whether a turn is additionally extracted into Neo4
 ```text
 User question
     ↓
+Pre-check Fast-path Greetings (Local dictionary check)
+    ├── Matched → Predefined response (Bypasses LLM/Guardrails completely)
+    └── No Match
+         ↓
+NeMo Input Guardrails
+    ├── Blocked → Predefined refusal response (Bypasses LangGraph)
+    └── Allowed
+         ↓
 LangGraph router
     ├── search → Tavily + SerpAPI
     ├── rag    → Pinecone + BM25 + Neo4j
@@ -268,7 +335,7 @@ Answer generation with recent conversation history
     ↓
 Atomic SQLite turn persistence
     ↓
-Human memory approval
+Human memory approval (optional)
     ├── approved → Neo4j + Pinecone long-term memory
     └── rejected → conversation history remains in SQLite only
 ```

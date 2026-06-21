@@ -1,0 +1,19 @@
+models:
+  - type: main
+    engine: openai
+    model: gpt-4o-mini
+    parameters:
+      max_retries: 0
+
+  - type: embeddings
+    engine: openai
+    model: text-embedding-3-small
+    parameters:
+      max_retries: 0
+
+rails:
+  dialog:
+    user_messages:
+      embeddings_only: true
+      embeddings_only_similarity_threshold: 0.82
+      embeddings_only_fallback_intent: unhandled_user_intent

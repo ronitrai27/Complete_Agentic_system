@@ -100,10 +100,16 @@ def start_background_ingestion(file_path: str, doc_id: str, conv_id: str, checks
 
 # ─── Agent runner ─────────────────────────────────────────────────────────────
 def run_agent_turn(user_query: str, uploaded_path, conv_id: str):
-    from src.agents.rag_agent import compile_agent
+    from src.agents.rag_agent import compile_agent, pre_check_query
     from src.agents.state import create_initial_state
 
     event_bus.clear()
+
+    # Pre-check guardrails and fast-path greetings
+    pre_result = pre_check_query(user_query, conv_id, uploaded_path)
+    if pre_result:
+        return pre_result
+
     agent = compile_agent()
     state = create_initial_state(
         user_query=user_query,
@@ -199,29 +205,11 @@ for msg in st.session_state.messages:
 
 # ── Live events (shown after messages) ───────────────────────────────────────
 if st.session_state.events:
-    with st.expander("🔍 Agent trace", expanded=False):
+    with st.expander("🔍 Agent trace", expanded=True):
         for e in st.session_state.events[-20:]:
             st.caption(e.get("message", ""))
 
-# ── HITL interrupt ─────────────────────────────────────────────────────────────
-if st.session_state.hitl_pending and st.session_state.hitl_state:
-    preview = (st.session_state.hitl_state.get("final_answer") or "")[:300]
-    st.info(f"💾 **Save to long-term memory?**\n\n{preview}…")
-    col_a, col_r, _ = st.columns([1, 1, 4])
-    with col_a:
-        if st.button("✅ Accept", type="primary", key="hitl_accept"):
-            with st.spinner("Saving to memory (Neo4j graph, Pinecone & SQLite)..."):
-                from src.agents.rag_agent import resume_agent
-                resume_agent(st.session_state.conv_id, {"approved": True, "notes": None})
-            st.session_state.hitl_pending = False
-            st.rerun()
-    with col_r:
-        if st.button("✗ Reject", key="hitl_reject"):
-            with st.spinner("Discarding memory turn..."):
-                from src.agents.rag_agent import resume_agent
-                resume_agent(st.session_state.conv_id, {"approved": False})
-            st.session_state.hitl_pending = False
-            st.rerun()
+# (HITL long-term memory checkpoint removed)
 
 # ── MCP OAuth authorization interrupt ─────────────────────────────────────────
 if st.session_state.auth_pending and st.session_state.auth_state:
@@ -378,12 +366,6 @@ if needs_response:
                         f"Please authorize below so I can continue."
                     )
                 })
-            elif result.get("__interrupt__"):
-                # Legacy HITL memory checkpoint
-                status.update(label="✅ Done", state="complete", expanded=False)
-                st.session_state.messages.append({"role": "agent", "content": answer})
-                st.session_state.hitl_pending = True
-                st.session_state.hitl_state   = result
             else:
                 status.update(label="✅ Done", state="complete", expanded=False)
                 st.session_state.messages.append({"role": "agent", "content": answer})

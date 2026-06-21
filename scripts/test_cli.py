@@ -118,15 +118,21 @@ def chat_loop():
             # Time the query execution
             query_start = time.time()
             
-            # Prepare state and configuration
-            initial_state = create_initial_state(
-                user_query=user_query,
-                conversation_id=conversation_id
-            )
-            config = {"configurable": {"thread_id": conversation_id}}
-            
-            # Run the agent turn until HITL checkpoint
-            result = agent.invoke(initial_state, config=config)
+            # Pre-check guardrails and fast-path greetings
+            from src.agents.rag_agent import pre_check_query
+            pre_result = pre_check_query(user_query, conversation_id)
+            if pre_result:
+                result = pre_result
+            else:
+                # Prepare state and configuration
+                initial_state = create_initial_state(
+                    user_query=user_query,
+                    conversation_id=conversation_id
+                )
+                config = {"configurable": {"thread_id": conversation_id}}
+                
+                # Run the agent turn until HITL checkpoint
+                result = agent.invoke(initial_state, config=config)
             query_time = time.time() - query_start
             
             # Print Route Decision
