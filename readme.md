@@ -8,6 +8,7 @@
 ![LlamaIndex / LlamaParse](https://img.shields.io/badge/LlamaIndex-brightgreen?style=flat-square)
 ![Tavily](https://img.shields.io/badge/Tavily-0052FF?style=flat-square)
 ![Arcade MCP](https://img.shields.io/badge/Arcade%20MCP-4B0082?style=flat-square)
+![Composio](https://img.shields.io/badge/Composio-red?style=flat-square)
 ![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-017AEC?style=flat-square&logo=apacheairflow&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![spaCy](https://img.shields.io/badge/spaCy-09A3D5?style=flat-square)
@@ -18,6 +19,7 @@ This project is an agentic RAG application with:
 - A LangGraph agent and router
 - Tavily and SerpAPI web search tools
 - Arcade MCP tools for Gmail, Google Docs, Notion, and Outlook
+- Composio agent toolkits (Jira, Linear, Gmail, Google Calendar, Notion, GitHub, Typeform, Apollo, Todoist)
 - LlamaCloud/LlamaParse document parsing
 - Pinecone semantic retrieval
 - BM25 lexical retrieval
@@ -58,6 +60,7 @@ TAVILY_API_KEY=
 SERPAPI_API_KEY=
 LLAMA_CLOUD_API_KEY=
 ARCADE_API_KEY=
+COMPOSIO_API_KEY=
 
 PINECONE_API_KEY=
 PINECONE_INDEX_NAME=agentic-system
@@ -100,6 +103,16 @@ The UI supports:
 - Approving or rejecting long-term memory
 - Completing MCP OAuth authorization
 - Opening the Neo4j relationship explorer
+
+### Composio integrations application
+
+To run the Composio connected-apps assistant:
+
+```powershell
+poetry run streamlit run ui/composio-agent.py --server.port 8502
+```
+
+Open `http://localhost:8502` to connect your integrations and chat with the ReAct agent.
 
 ### CLI chat
 
