@@ -600,6 +600,8 @@ with col_workflow:
             if st.button("🚀 Run Workflow", type="primary", use_container_width=True):
                 with st.status("Executing workflow...", expanded=True) as run_status:
                     success = True
+                    st.session_state["workflow_run_results"] = [] # Clear previous runs
+                    
                     for idx, step in enumerate(steps):
                         t_name = step["tool_name"]
                         run_status.write(f"⏳ **Step {idx+1}:** Invoking `{t_name}`...")
@@ -629,7 +631,9 @@ with col_workflow:
                                             except Exception:
                                                 if arg_type == "array":
                                                     val = [v.strip() for v in val.split(",") if v.strip()]
-                                    tool_args[arg] = val
+                                    # Omit optional empty values (empty strings, empty lists, empty dicts)
+                                    if val not in ("", [], {}):
+                                        tool_args[arg] = val
                         else:
                             # Gather from step fields
                             for field in step.get("fields", []):
@@ -648,7 +652,9 @@ with col_workflow:
                                             except Exception:
                                                 if arg_type in ("array", "list"):
                                                     val = [v.strip() for v in val.split(",") if v.strip()]
-                                    tool_args[arg] = val
+                                    # Omit optional empty values (empty strings, empty lists, empty dicts)
+                                    if val not in ("", [], {}):
+                                        tool_args[arg] = val
                                     
                         # Check connection status of this specific toolkit
                         tk_slug = t_name.split("_")[0].lower() if "_" in t_name else t_name.lower()
@@ -663,11 +669,24 @@ with col_workflow:
                                 break
                                 
                         if not is_connected:
-                            run_status.write(f"❌ **Step {idx+1} Failed!** Error: Toolkit `{tk_slug.upper()}` is not connected in your sidebar.")
+                            err_msg = f"Toolkit `{tk_slug.upper()}` is not connected in your sidebar."
+                            run_status.write(f"❌ **Step {idx+1} Failed!** Error: {err_msg}")
+                            print(f"\n[EXECUTE WORKFLOW STEP FAILED] step={idx+1}/{len(steps)} action={t_name} error={err_msg}", flush=True)
+                            st.session_state["workflow_run_results"].append({
+                                "step_idx": idx + 1,
+                                "tool_name": t_name,
+                                "success": False,
+                                "error": err_msg,
+                                "data": None
+                            })
                             success = False
                             break
                             
                         try:
+                            # Print to terminal
+                            print(f"\n[EXECUTE WORKFLOW STEP] step={idx+1}/{len(steps)} action={t_name}", flush=True)
+                            print(f"Arguments: {tool_args}", flush=True)
+                            
                             # Invoke Composio tool directly via Python SDK with skip check
                             from src.agents.composio_agent import get_composio
                             comp = get_composio()
@@ -692,6 +711,18 @@ with col_workflow:
                                 error_msg = getattr(result, "error", None)
                                 result_data = getattr(result, "data", None)
                                 
+                            # Print result to terminal
+                            print(f"[EXECUTE WORKFLOW STEP RESPONSE] successful={successful} error={error_msg}", flush=True)
+                            print(f"Payload: {result_data}\n", flush=True)
+                            
+                            st.session_state["workflow_run_results"].append({
+                                "step_idx": idx + 1,
+                                "tool_name": t_name,
+                                "success": successful,
+                                "error": error_msg,
+                                "data": result_data
+                            })
+                            
                             if successful:
                                 run_status.write(f"✅ **Step {idx+1} Success!** Result:")
                                 run_status.code(str(result_data)[:1000])
@@ -702,8 +733,19 @@ with col_workflow:
                                 success = False
                                 break
                         except Exception as err:
+                            error_trace = traceback.format_exc()
+                            print(f"[EXECUTE WORKFLOW STEP EXCEPTION] step={idx+1}/{len(steps)} action={t_name} error={err}\n{error_trace}", flush=True)
+                            
+                            st.session_state["workflow_run_results"].append({
+                                "step_idx": idx + 1,
+                                "tool_name": t_name,
+                                "success": False,
+                                "error": str(err),
+                                "data": error_trace
+                            })
+                            
                             run_status.write(f"❌ **Step {idx+1} Failed!** Error: {err}")
-                            run_status.code(traceback.format_exc())
+                            run_status.code(error_trace)
                             success = False
                             break
                             
@@ -753,3 +795,27 @@ with col_workflow:
                 mime="application/json",
                 use_container_width=True
             )
+            
+    # ─── Persistent Execution Results Proof ───────────────────────────────────────
+    if "workflow_run_results" in st.session_state and st.session_state["workflow_run_results"]:
+        st.divider()
+        st.markdown("### 📝 Execution Logs & Payload Proof")
+        for res in st.session_state["workflow_run_results"]:
+            status_emoji = "✅" if res["success"] else "❌"
+            with st.expander(
+                label=f"Step {res['step_idx']}: {res['tool_name']} {status_emoji}",
+                expanded=True
+            ):
+                if res["success"]:
+                    st.success(f"Action '{res['tool_name']}' completed successfully!")
+                    if res["data"]:
+                        st.json(res["data"])
+                    else:
+                        st.info("Execution returned no response payload.")
+                else:
+                    st.error(f"Action failed with error: {res['error']}")
+                    if res["data"]:
+                        if isinstance(res["data"], (dict, list)):
+                            st.json(res["data"])
+                        else:
+                            st.code(str(res["data"]))

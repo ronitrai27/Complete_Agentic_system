@@ -111,7 +111,7 @@ def make_set_workflow_tool(workflow_holder: dict):
 
 def get_llm() -> ChatOpenAI:
     api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-    return ChatOpenAI(model="gpt-4.1-mini", temperature=0.1, api_key=api_key)
+    return ChatOpenAI(model="gpt-4o-mini", temperature=0.1, api_key=api_key)
 
 
 def compile_workflow_agent(session, workflow_holder: dict):
