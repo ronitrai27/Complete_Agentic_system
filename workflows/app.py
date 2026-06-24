@@ -205,7 +205,7 @@ def load_all_composio_tools(user_id: str, toolkits: list[str]):
     all_tools = []
     for tk in toolkits:
         try:
-            tools = comp.tools.get(user_id=user_id, toolkits=[tk])
+            tools = comp.tools.get(user_id=user_id, toolkits=[tk], limit=200)
             all_tools.extend(tools)
         except Exception as exc:
             print(f"[load_all_composio_tools] Error loading {tk}: {exc}", flush=True)
@@ -290,10 +290,12 @@ with st.sidebar:
     try:
         sess = get_session()
         toolkits = get_toolkit_status(sess)
+        st.session_state["toolkits_status"] = toolkits
         save_connected_toolkits_to_sqlite(st.session_state.user_id, toolkits)
     except Exception as exc:
         st.error(f"Error accessing integrations: {exc}")
         toolkits = []
+        st.session_state["toolkits_status"] = []
         
     # Render connection states
     for tk in toolkits:
@@ -504,8 +506,20 @@ with col_workflow:
                         t_obj = obj
                         break
                         
-                if not t_obj:
-                    st.warning(f"⚠️ Connection status: `{tool_name}` is not active in current session. Rendered using agent fields. Connect in the sidebar to run.")
+                # Determine connection status based on toolkit connection states
+                tk_slug = tool_name.split("_")[0].lower() if "_" in tool_name else tool_name.lower()
+                if tk_slug == "google":
+                    tk_slug = "googlecalendar"
+                    
+                toolkits_status = st.session_state.get("toolkits_status", [])
+                is_connected = False
+                for tk in toolkits_status:
+                    if tk["slug"].lower() == tk_slug and tk.get("connected"):
+                        is_connected = True
+                        break
+                        
+                if not is_connected:
+                    st.warning(f"⚠️ {tk_slug.upper()} is not connected. Please connect it in the sidebar to run this step.")
                 
                 if fields and isinstance(fields, list):
                     # Render parameters based on the fields list provided by the agent
@@ -636,16 +650,57 @@ with col_workflow:
                                                     val = [v.strip() for v in val.split(",") if v.strip()]
                                     tool_args[arg] = val
                                     
-                        if not t_obj:
-                            run_status.write(f"❌ **Step {idx+1} Failed!** Error: Action `{t_name}` is not connected in current session.")
+                        # Check connection status of this specific toolkit
+                        tk_slug = t_name.split("_")[0].lower() if "_" in t_name else t_name.lower()
+                        if tk_slug == "google":
+                            tk_slug = "googlecalendar"
+                            
+                        toolkits_status = st.session_state.get("toolkits_status", [])
+                        is_connected = False
+                        for tk in toolkits_status:
+                            if tk["slug"].lower() == tk_slug and tk.get("connected"):
+                                is_connected = True
+                                break
+                                
+                        if not is_connected:
+                            run_status.write(f"❌ **Step {idx+1} Failed!** Error: Toolkit `{tk_slug.upper()}` is not connected in your sidebar.")
                             success = False
                             break
                             
                         try:
-                            # Invoke Composio tool
-                            result = t_obj.invoke(tool_args)
-                            run_status.write(f"✅ **Step {idx+1} Success!** Result:")
-                            run_status.code(str(result)[:1000])
+                            # Invoke Composio tool directly via Python SDK with skip check
+                            from src.agents.composio_agent import get_composio
+                            comp = get_composio()
+                            
+                            result = comp.tools.execute(
+                                slug=t_name,
+                                arguments=tool_args,
+                                user_id=st.session_state.user_id,
+                                dangerously_skip_version_check=True
+                            )
+                            
+                            successful = False
+                            error_msg = ""
+                            result_data = None
+                            
+                            if isinstance(result, dict):
+                                successful = result.get("successful", False)
+                                error_msg = result.get("error")
+                                result_data = result.get("data")
+                            else:
+                                successful = getattr(result, "successful", False)
+                                error_msg = getattr(result, "error", None)
+                                result_data = getattr(result, "data", None)
+                                
+                            if successful:
+                                run_status.write(f"✅ **Step {idx+1} Success!** Result:")
+                                run_status.code(str(result_data)[:1000])
+                            else:
+                                run_status.write(f"❌ **Step {idx+1} Failed!** Error: {error_msg or 'Execution unsuccessful'}")
+                                if result_data:
+                                    run_status.code(str(result_data)[:1000])
+                                success = False
+                                break
                         except Exception as err:
                             run_status.write(f"❌ **Step {idx+1} Failed!** Error: {err}")
                             run_status.code(traceback.format_exc())
