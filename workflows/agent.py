@@ -123,7 +123,20 @@ def compile_workflow_agent(session, workflow_holder: dict):
         """
         field_count = sum(len(s.get("fields", [])) for s in steps)
         print(f"\n[set_workflow called] name='{name}' steps={len(steps)} total_fields={field_count}", flush=True)
-        
+
+        # ── Console the full structure so you can inspect params ──────────────
+        import json
+        print("\n" + "=" * 60, flush=True)
+        print(f"  WORKFLOW: {name}", flush=True)
+        print(f"  DESC:     {description}", flush=True)
+        print("=" * 60, flush=True)
+        for i, step in enumerate(steps, 1):
+            print(f"  Step {i}: {step.get('tool_name')} — {step.get('step_description')}", flush=True)
+            for field in step.get("fields", []):
+                print(f"    • {field.get('name')} ({field.get('type')}) = {field.get('value')!r}  # {field.get('description')}", flush=True)
+        print("=" * 60 + "\n", flush=True)
+        # ─────────────────────────────────────────────────────────────────────
+
         # Stage the proposed workflow in a temporary key first, to validate before applying
         workflow_holder["proposed"] = {
             "name": name,

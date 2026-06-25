@@ -390,6 +390,8 @@ def get_tool_branding(tool_name: str) -> tuple[str, str]:
         return "#5E6AD2", "📐 Linear"
     elif "todoist" in name:
         return "#E44332", "✅ Todoist"
+    elif "outlook" in name:
+        return "#0072C6", "📧 Outlook"
     return "#555555", "🔧 Custom Tool"
 
 
