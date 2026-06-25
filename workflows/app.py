@@ -2,6 +2,13 @@
 Workflow Creator Streamlit App — chat with an agent to build and run workflows.
 """
 import sys
+
+# Force stdout/stderr to use UTF-8 encoding on Windows to prevent UnicodeEncodeErrors
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import uuid
 import sqlite3
 import traceback
